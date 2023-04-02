@@ -1,0 +1,257 @@
+---
+title: "Bayesian Logistic Analysis"
+date: "Due: Wednesday, 12/14"
+author: "[Chenjia Li]"
+output: html_notebook
+---
+
+```{r setup, results=F, message=FALSE, error=FALSE, warning=FALSE}
+# Load packages
+library(dplyr)
+library(ggplot2)
+library(rstanarm)
+library(bayesplot)
+library(bayesrules)
+library(tidyverse)
+library(tidybayes)
+library(broom.mixed)
+```
+
+
+
+
+
+
+
+## 1. Data Explanation and Data Wrangling
+
+#### a) Description of Dataset and Purpose of my Discovery
+In Social Network Purchase dataset, there are predictors such as Age and EstimatedSalary which can be used to build a logistic regression for binary response variable Puchased (either purchased 1 or not purchased 0).
+
+DataSource: https://www.kaggle.com/datasets/dragonheir/logistic-regression, ANANYA NAYAN · 2017
+
+
+#### b)Dataset Overview
+```{r}
+#Access dataset
+data1 <- read.csv("sna.csv")
+
+#First 10 row of the dataset
+head(data1,10)
+
+#Response and Predictor names
+attributes(data1)$names
+
+#Use school to do categorical regression
+unique(data1$Gender)
+```
+
+
+#### c)Data Wrangling
+```{r}
+data1 <- data1 %>%
+  select(-User.ID)
+
+data1
+```
+
+
+#### d) plot the dataset
+```{r}
+#Binary response variable puchase = 1) 1 purchased 2) 0 not purchased
+#As a result, we should use binomial distribution to build a logistic regression model for predicting the purchase
+ggplot(data1, aes(x = EstimatedSalary, y = Purchased, color = Gender)) +
+  geom_point()
+
+ggplot(data1, aes(x = Age, y = Purchased, color = Gender)) +
+  geom_point()
+```
+
+
+## 2. Build Model for logsitic regression
+My prior understanding about the coefficients of predictors are normally distributed and have the following properties:
+1) centered intercept: $$\beta_{0c} \sim N(-1.25 , 0.3)$$
+which means Our prior understanding is $$ \pi \approx log(\frac{\pi}{1-\pi} = log(\frac{0.18}{1-0.18} \approx -1.5)$$ and 
+log odds varying between $$(\frac{e^{-1.55}}{1+e^{-1.55}},\frac{e^{-0.95}}{1+e^{-0.95}}) = (0.175,0.279)$$
+
+2) The salary coefficient (slope): $$\beta_1 \sim N(0.003,0.0015)$$, for every 1 unit increase in salary, the log odds of purchase increase between $$(e^{0},e^{0.006}) \approx (1,1.006)$$
+
+Then we can use above information to build our model
+
+
+```{r}
+purchase_model_prior <- stan_glm(Purchased ~ EstimatedSalary,
+  data = data1, family = binomial,
+  prior_intercept = normal(-1.25, 0.3),
+  prior = normal(0.003, 0.0015, autoscale = T),
+  chains = 4, iter = 5000*2, seed = 12375,
+  prior_PD = TRUE)
+
+purchase_model_prior2 <- stan_glm(Purchased ~ Age,
+  data = data1, family = binomial,
+  prior_intercept = normal(-1.25, 0.3),
+  prior = normal(0.06, 0.03, autoscale = T),
+  chains = 4, iter = 5000*2, seed = 12375,
+  prior_PD = TRUE)
+```
+
+
+
+## 3. 100 posterior Model
+```{r}
+data1 %>%
+  add_fitted_draws(purchase_model_prior, n = 100) %>%
+  ggplot(aes(x = EstimatedSalary, y = Purchased)) +
+  geom_line(aes(y = .value, group = .draw), size = 0.1)
+
+data1 %>%
+  add_fitted_draws(purchase_model_prior2, n = 100) %>%
+  ggplot(aes(x = Age, y = Purchased)) +
+  geom_line(aes(y = .value, group = .draw), size = 0.1)
+
+```
+
+
+
+```{r}
+purchase_model_1 <- update(purchase_model_prior, prior_PD = FALSE)
+purchase_model_2 <- update(purchase_model_prior2, prior_PD = FALSE)
+```
+
+
+
+## 4. Model Diagnostics
+
+#### a) Diagnostics Plot
+Based on the Trace plot, we see 
+1. Exhibit no discernible trends.
+2. It Has a stable mean across the iterations.
+3. It Has a stable variance across the iterations.
+4. I Look similar to a bunch of white noise.
+
+Based on the density plot, it is pretty close to normally disributed and similar shape for each chain.
+
+For the Autocorrelation plot, after several lags, it is very obvious to see that the correlation becomes 0.
+All the above states the model is good to use.
+
+```{r}
+mcmc_trace(purchase_model_1)
+mcmc_dens_overlay(purchase_model_1)
+mcmc_acf(purchase_model_1)
+```
+
+```{r}
+mcmc_trace(purchase_model_2)
+mcmc_dens_overlay(purchase_model_2)
+mcmc_acf(purchase_model_2)
+```
+
+
+
+```{r}
+data1 %>%
+  add_fitted_draws(purchase_model_1, n = 100) %>%
+  ggplot(aes(x = EstimatedSalary, y = Purchased)) +
+  geom_line(aes(y = .value, group = .draw), size = 0.1)
+
+data1 %>%
+  add_fitted_draws(purchase_model_2, n = 100) %>%
+  ggplot(aes(x = Age, y = Purchased)) +
+  geom_line(aes(y = .value, group = .draw), size = 0.1)
+
+```
+
+
+
+#### b) The neff_Ratio and rhat
+```{r}
+neff_ratio(purchase_model_1)
+rhat(purchase_model_1)
+```
+
+```{r}
+neff_ratio(purchase_model_2)
+rhat(purchase_model_2)
+```
+
+
+## 5. Model Analysis
+Intervals for predictor coefficient
+```{r}
+
+posterior_interval(purchase_model_1, prob = 0.80)
+posterior_interval(purchase_model_2, prob = 0.80)
+```
+
+
+
+## 6. Posterior predictions of binary outcome
+It is Reasonable to classify at 72300 Salary level, it is better to say they are most likely to purchase the product. For the Age at 35, they are not likely to buy the product
+```{r}
+binary_prediction_Salary <- posterior_predict(purchase_model_1, newdata = data.frame(EstimatedSalary = 72300))
+table(binary_prediction_Salary)
+
+binary_prediction_Age <- posterior_predict(purchase_model_2, newdata = data.frame(Age = 35))
+table(binary_prediction_Age)
+```
+
+
+
+```{r}
+classification_summary(model = purchase_model_1, data = data1, cutoff = 0.5)
+classification_summary(model = purchase_model_1, data = data1, cutoff = 0.1)
+classification_summary(model = purchase_model_1, data = data1, cutoff = 0.9)
+
+cv_accuracy_1_salary <- classification_summary_cv(model = purchase_model_1, data = data1,cutoff = 0.1, k = 10)
+cv_accuracy_1_salary$cv
+
+cv_accuracy_2_salary <- classification_summary_cv(model = purchase_model_1, data = data1,cutoff = 0.5, k = 10)
+cv_accuracy_2_salary$cv
+
+cv_accuracy_3_salary <- classification_summary_cv(model = purchase_model_1, data = data1,cutoff = 0.9, k = 10)
+cv_accuracy_3_salary$cv
+```
+
+
+## 7. Model Selection and Specificity-Sensitivity tradeoff
+
+```{r}
+classification_summary(model = purchase_model_2, data = data1, cutoff = 0.2)
+classification_summary(model = purchase_model_2, data = data1, cutoff = 0.4)
+classification_summary(model = purchase_model_2, data = data1, cutoff = 0.35)
+
+cv_accuracy_1_age <- classification_summary_cv(model = purchase_model_2, data = data1,cutoff = 0.2, k = 10)
+cv_accuracy_1_age$cv
+
+cv_accuracy_2_age <- classification_summary_cv(model = purchase_model_2, data = data1,cutoff = 0.35, k = 10)
+cv_accuracy_2_age$cv
+
+cv_accuracy_3_age <- classification_summary_cv(model = purchase_model_2, data = data1,cutoff = 0.4, k = 10)
+cv_accuracy_3_age$cv
+```
+
+
+
+```{r}
+model_elpd_salary <- loo(purchase_model_1)
+model_elpd_salary$estimates
+
+model_elpd_age <- loo(purchase_model_2)
+model_elpd_age$estimates
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
